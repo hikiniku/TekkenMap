@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>マインドマップ作成</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+        }
+        #mapContainer {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            background-color: #f0f0f0;
+        }
+        .node {
+            position: absolute;
+            padding: 10px;
+            background-color: #fff;
+            border: 2px solid #007bff;
+            border-radius: 5px;
+            cursor: move;
+            text-align: center;
+            user-select: none;
+        }
+        .node img {
+            width: 320px;
+            height: auto;
+            display: block;
+            margin-top: 10px;
+        }
+        .connection {
+            stroke: #007bff;
+            stroke-width: 2;
+        }
+        .link-text {
+            fill: #007bff;
+            font-size: 12px;
+            dominant-baseline: middle;
+            text-anchor: middle;
+            cursor: move;
+            user-select: none;
+        }
+        #contextMenu {
+            position: absolute;
+            background-color: white;
+            border: 1px solid #ccc;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+            display: none;
+            z-index: 10;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        #contextMenu button {
+            display: block;
+            width: 100%;
+            padding: 5px;
+            margin-bottom: 5px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        #contextMenu button:hover {
+            background-color: #0056b3;
+        }
+        #controls {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            z-index: 20;
+        }
+    </style>
+</head>
+<body>
+
+<div id="mapContainer">
+    <svg id="connectionsSvg" width="100%" height="100%" style="position: absolute; top: 0; left: 0; z-index: 0;"></svg>
+</div>
+
+<div id="contextMenu">
+    <button id="addNodeButton">新規ノード追加</button>
+    <button id="addLinkButton">リンク追加</button>
+    <button id="deleteNodeButton">ノード削除</button>
+    <button id="addGifButton">GIFを追加</button>
+    <button id="addLinkTextButton">リンクテキスト追加</button>
+    <button id="deleteLinkButton">リンク削除</button>
+    <button id="redoDeleteButton">削除を元に戻す</button>
+</div>
+
+<div id="controls">
+    <button id="saveButton">保存</button>
+    <input type="file" id="loadInput" style="display: none;">
+    <button id="loadButton">読み込み</button>
+</div>
+
+<input type="file" id="gifInput" accept="image/gif" style="display: none;">
+
+<script>
+    const mapContainer = document.getElementById('mapContainer');
+    const connectionsSvg = document.getElementById('connectionsSvg');
+    const contextMenu = document.getElementById('contextMenu');
+    const gifInput = document.getElementById('gifInput');
+    const addNodeButton = document.getElementById('addNodeButton');
+    const addLinkButton = document.getElementById('addLinkButton');
+    const deleteNodeButton = document.getElementById('deleteNodeButton');
+    const addGifButton = document.getElementById('addGifButton');
+    const addLinkTextButton = document.getElementById('addLinkTextButton');
+    const deleteLinkButton = document.getElementById('deleteLinkButton');
+    const redoDeleteButton = document.getElementById('redoDeleteButton');
+    const saveButton = document.getElementById('saveButton');
+    const loadButton = document.getElementById('loadButton');
+    const loadInput = document.getElementById('loadInput');
+
+    let nodes = [];
+    let connections = [];
+    let isAddingLink = false;
+    let selectedNode1 = null;
+    let nodeToDelete = null;
+    let nodeToAddGif = null;
+    let linkToEdit = null;
+    let lastDeletedNode = null;
+    let lastDeletedConnections = [];
+    let draggedTextElement = null;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    function createNode(x, y, text = 'New Node', imgSrc = null) {
+        const node = document.createElement('div');
+        node.className = 'node';
+        node.style.left = `${x}px`;
+        node.style.top = `${y}px`;
+        node.textContent = text;
+        mapContainer.appendChild(node);
+        nodes.push(node);
+
+        if (imgSrc) {
+            const img = document.createElement('img');
+            img.src = imgSrc;
+            img.alt = "GIF Animation";
+            node.appendChild(img);
+        }
+
+        node.addEventListener('mousedown', onMouseDown);
+        node.addEventListener('contextmenu', (e) => onNodeRightClick(e, node));
+        node.addEventListener('click', onNodeClick);
+        node.addEventListener('dblclick', onNodeDoubleClick);
+
+        return node;
+    }
+
+    function onNodeClick(event) {
+        const node = event.target;
+        if (isAddingLink) {
+            if (!selectedNode1) {
+                selectedNode1 = node;
+                node.style.borderColor = 'red'; // 最初のノードを赤い枠で強調表示
+            } else {
+                createConnection(selectedNode1, node);
+                selectedNode1.style.borderColor = '#007bff'; // 最初のノードの強調表示を解除
+                selectedNode1 = null;
+                isAddingLink = false; // リンク追加モードを終了
+            }
+        }
+    }
+
+    function onNodeDoubleClick(event) {
+        const node = event.target;
+        const currentText = node.textContent;
+        const newText = prompt("ノードの名前を入力してください:", currentText);
+        if (newText !== null && newText.trim() !== "") {
+            node.textContent = newText;
+        }
+    }
+
+    function onNodeRightClick(event, node) {
+        event.preventDefault();
+        nodeToDelete = node; // 削除対象のノードを記憶
+        nodeToAddGif = node; // GIF追加対象のノードを記憶
+        showContextMenu(event.pageX, event.pageY);
+    }
+
+    function onLinkRightClick(event, linkData) {
+        event.preventDefault();
+        linkToEdit = linkData;
+        showContextMenu(event.pageX, event.pageY);
+    }
+
+    function deleteNode(node) {
+        // 削除したノードと接続情報を保存
+        lastDeletedNode = node;
+        lastDeletedConnections = connections.filter(({ node1, node2 }) => node1 === node || node2 === node);
+
+        // ノードと関連する接続を削除
+        connections = connections.filter(({ connection, textElement, node1, node2 }) => {
+            if (node1 === node || node2 === node) {
+                connectionsSvg.removeChild(connection);
+                if (textElement) connectionsSvg.removeChild(textElement);
+                return false;
+            }
+            return true;
+        });
+
+        // ノードを削除
+        mapContainer.removeChild(node);
+        nodes = nodes.filter(n => n !== node);
+    }
+
+    function redoDelete() {
+        if (lastDeletedNode) {
+            const rect = mapContainer.getBoundingClientRect();
+            const newNode = createNode(parseFloat(lastDeletedNode.style.left), parseFloat(lastDeletedNode.style.top), lastDeletedNode.textContent);
+
+            lastDeletedConnections.forEach(({ node1, node2, text }) => {
+                const restoredNode1 = node1 === lastDeletedNode ? newNode : node1;
+                const restoredNode2 = node2 === lastDeletedNode ? newNode : node2;
+                createConnection(restoredNode1, restoredNode2, text);
+            });
+
+            lastDeletedNode = null;
+            lastDeletedConnections = [];
+        }
+    }
+
+    function createConnection(node1, node2, text = '') {
+        const connection = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        connection.classList.add('connection');
+        connectionsSvg.appendChild(connection);
+
+        const textElement = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        textElement.classList.add('link-text');
+        textElement.textContent = text;
+        connectionsSvg.appendChild(textElement);
+
+        const linkData = { connection, textElement, node1, node2, text };
+        connections.push(linkData);
+
+        updateConnections();
+
+        connection.addEventListener('contextmenu', (e) => onLinkRightClick(e, linkData));
+        textElement.addEventListener('contextmenu', (e) => onLinkRightClick(e, linkData));
+        textElement.addEventListener('mousedown', onTextMouseDown);
+        return linkData;
+    }
+
+    function updateConnections() {
+        connections.forEach(({ connection, textElement, node1, node2 }) => {
+            const rect1 = node1.getBoundingClientRect();
+            const rect2 = node2.getBoundingClientRect();
+
+            const x1 = rect1.left + rect1.width / 2;
+            const y1 = rect1.top + rect1.height / 2;
+            const x2 = rect2.left + rect2.width / 2;
+            const y2 = rect2.top + rect2.height / 2;
+
+            connection.setAttribute('x1', x1);
+            connection.setAttribute('y1', y1);
+            connection.setAttribute('x2', x2);
+            connection.setAttribute('y2', y2);
+
+            if (textElement && !textElement.hasAttribute('data-dragged')) {
+                const offsetX = (x2 - x1) * 0.1;
+                const offsetY = (y2 - y1) * 0.1;
+                textElement.setAttribute('x', (x1 + x2) / 2 + offsetX);
+                textElement.setAttribute('y', (y1 + y2) / 2 + offsetY);
+            }
+        });
+    }
+
+    function onTextMouseDown(event) {
+        draggedTextElement = event.target;
+        offsetX = event.clientX - parseFloat(draggedTextElement.getAttribute('x'));
+        offsetY = event.clientY - parseFloat(draggedTextElement.getAttribute('y'));
+
+        document.addEventListener('mousemove', onTextMouseMove);
+        document.addEventListener('mouseup', onTextMouseUp);
+    }
+
+    function onTextMouseMove(event) {
+        if (draggedTextElement) {
+            draggedTextElement.setAttribute('x', event.clientX - offsetX);
+            draggedTextElement.setAttribute('y', event.clientY - offsetY);
+            draggedTextElement.setAttribute('data-dragged', 'true');
+        }
+    }
+
+    function onTextMouseUp() {
+        document.removeEventListener('mousemove', onTextMouseMove);
+        document.removeEventListener('mouseup', onTextMouseUp);
+        draggedTextElement = null;
+    }
+
+    let draggedNode = null;
+
+    function onMouseDown(event) {
+        draggedNode = event.target;
+        const rect = draggedNode.getBoundingClientRect();
+        offsetX = event.clientX - rect.left;
+        offsetY = event.clientY - rect.top;
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+    }
+
+    function onMouseMove(event) {
+        if (draggedNode) {
+            draggedNode.style.left = `${event.clientX - offsetX}px`;
+            draggedNode.style.top = `${event.clientY - offsetY}px`;
+            updateConnections();
+        }
+    }
+
+    function onMouseUp() {
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+        draggedNode = null;
+    }
+
+    function showContextMenu(x, y) {
+        contextMenu.style.left = `${x}px`;
+        contextMenu.style.top = `${y}px`;
+        contextMenu.style.display = 'block';
+    }
+
+    function hideContextMenu() {
+        contextMenu.style.display = 'none';
+    }
+
+    mapContainer.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        showContextMenu(event.pageX, event.pageY);
+    });
+
+    document.addEventListener('click', () => {
+        hideContextMenu();
+    });
+
+    addNodeButton.addEventListener('click', () => {
+        const rect = mapContainer.getBoundingClientRect();
+        createNode(contextMenu.style.left.replace('px', '') - rect.left, contextMenu.style.top.replace('px', '') - rect.top);
+        hideContextMenu();
+    });
+
+    addLinkButton.addEventListener('click', () => {
+        isAddingLink = true;
+        selectedNode1 = null; // 前回の選択状態をリセット
+        hideContextMenu();
+    });
+
+    deleteNodeButton.addEventListener('click', () => {
+        if (nodeToDelete) {
+            const confirmDelete = confirm("このノードを削除してもよろしいですか？");
+            if (confirmDelete) {
+                deleteNode(nodeToDelete);
+            }
+            nodeToDelete = null;
+        }
+        hideContextMenu();
+    });
+
+    addGifButton.addEventListener('click', () => {
+        if (nodeToAddGif) {
+            gifInput.click();
+        }
+        hideContextMenu();
+    });
+
+    gifInput.addEventListener('change', (event) => {
+        const file = event.target.files[0];
+        if (file && nodeToAddGif) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = document.createElement('img');
+                img.src = e.target.result;
+                img.alt = "GIF Animation";
+                nodeToAddGif.appendChild(img);
+                nodeToAddGif = null;
+            };
+            reader.readAsDataURL(file);
+        }
+    });
+
+    addLinkTextButton.addEventListener('click', () => {
+        if (linkToEdit) {
+            const newText = prompt("リンクに表示するテキストを入力してください:", linkToEdit.text);
+            if (newText !== null) {
+                linkToEdit.text = newText;
+                linkToEdit.textElement.textContent = newText;
+                updateConnections();
+            }
+        }
+        hideContextMenu();
+    });
+
+    deleteLinkButton.addEventListener('click', () => {
+        if (linkToEdit) {
+            connectionsSvg.removeChild(linkToEdit.connection);
+            connectionsSvg.removeChild(linkToEdit.textElement);
+            connections = connections.filter(link => link !== linkToEdit);
+            linkToEdit = null;
+        }
+        hideContextMenu();
+    });
+
+    redoDeleteButton.addEventListener('click', () => {
+        redoDelete();
+        hideContextMenu();
+    });
+
+    saveButton.addEventListener('click', () => {
+        const data = {
+            nodes: nodes.map(node => ({
+                text: node.textContent,
+                x: parseFloat(node.style.left),
+                y: parseFloat(node.style.top),
+                imgSrc: node.querySelector('img') ? node.querySelector('img').src : null
+            })),
+            connections: connections.map(({ node1, node2, text, textElement }) => ({
+                node1Index: nodes.indexOf(node1),
+                node2Index: nodes.indexOf(node2),
+                text,
+                textX: parseFloat(textElement.getAttribute('x')),
+                textY: parseFloat(textElement.getAttribute('y'))
+            }))
+        };
+        const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'mindmap.json';
+        a.click();
+    });
+
+    loadButton.addEventListener('click', () => {
+        loadInput.click();
+    });
+
+    loadInput.addEventListener('change', (event) => {
+        const file = event.target.files[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const data = JSON.parse(e.target.result);
+                clearMap();
+                data.nodes.forEach(nodeData => {
+                    createNode(nodeData.x, nodeData.y, nodeData.text, nodeData.imgSrc);
+                });
+                data.connections.forEach(conn => {
+                    const link = createConnection(nodes[conn.node1Index], nodes[conn.node2Index], conn.text);
+                    link.textElement.setAttribute('x', conn.textX);
+                    link.textElement.setAttribute('y', conn.textY);
+                    link.textElement.setAttribute('data-dragged', 'true');
+                });
+                updateConnections(); // Ensure all connections are updated after loading
+            };
+            reader.readAsText(file);
+        }
+    });
+
+    function clearMap() {
+        nodes.forEach(node => mapContainer.removeChild(node));
+        connections.forEach(({ connection, textElement }) => {
+            connectionsSvg.removeChild(connection);
+            connectionsSvg.removeChild(textElement);
+        });
+        nodes = [];
+        connections = [];
+    }
+
+    const rootNode = createNode(300, 200, 'Root Node');
+    const childNode1 = createNode(500, 300, 'Child Node 1');
+    const childNode2 = createNode(100, 300, 'Child Node 2');
+
+    createConnection(rootNode, childNode1);
+    createConnection(rootNode, childNode2);
+
+</script>
+
+</body>
+</html>
